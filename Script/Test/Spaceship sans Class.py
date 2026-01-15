@@ -4,13 +4,25 @@ from random import randint
 
 #SOUS-PROGRAMME
 
-def CreateTopPath(startPos, steps, padding, surfaceHeight, surfaceWidth, roughness):
+def CreateTopPath(startPos, steps, padding, surfaceHeight, surfaceWidth, roughness, centerMin, centerMax):
+    """
+    Crée le chemin du haut du tunnel en restant dans une zone centrale.
+    centerMin et centerMax définissent la zone où le tunnel doit rester.
+    """
     pointsList = [startPos]
     spacing = int(surfaceWidth/steps)
 
     for i in range(1, steps+1):
         x = pointsList[i-1][0] + spacing
+        # Calcul du déplacement aléatoire
         y = int(pointsList[i-1][1] + randint(-pointsList[i-1][1] + padding, surfaceHeight - padding - pointsList[i-1][1]) * roughness)
+
+        # Contraindre Y dans la zone centrale
+        if y < centerMin:
+            y = centerMin
+        elif y > centerMax:
+            y = centerMax
+
         pointsList.append((x, y))
 
     return pointsList
@@ -38,6 +50,33 @@ def CreateNewTile(width, height, position, imageStr):
         'TUNNEL_TOP_LIST':[],
         'TUNNEL_BOTTOM_LIST':[]
     }
+
+def GetTunnelBoundsAtX(tile, ship_x, surface_width, tunnel_step):
+    if not tile['TUNNEL_TOP_LIST'] or not tile['TUNNEL_BOTTOM_LIST']:
+        return None
+    local_x = ship_x - tile['RECT'].x
+    if local_x < 0 or local_x > surface_width:
+        return None
+    spacing = surface_width / tunnel_step
+    if spacing == 0:
+        return None
+    idx = int(local_x // spacing)
+    if idx >= len(tile['TUNNEL_TOP_LIST']) - 1:
+        idx = len(tile['TUNNEL_TOP_LIST']) - 2
+
+    x0, y0 = tile['TUNNEL_TOP_LIST'][idx]
+    x1, y1 = tile['TUNNEL_TOP_LIST'][idx + 1]
+    t = 0.0 if x1 == x0 else (local_x - x0) / (x1 - x0)
+    top_y = y0 + (y1 - y0) * t
+
+    x0, y0 = tile['TUNNEL_BOTTOM_LIST'][idx]
+    x1, y1 = tile['TUNNEL_BOTTOM_LIST'][idx + 1]
+    t = 0.0 if x1 == x0 else (local_x - x0) / (x1 - x0)
+    bottom_y = y0 + (y1 - y0) * t
+
+    top_y_screen = tile['RECT'].top + top_y
+    bottom_y_screen = tile['RECT'].top + bottom_y
+    return top_y_screen, bottom_y_screen
 
 #INITIAL GAME
 
@@ -81,7 +120,16 @@ TUNNEL_BOTTOM_COULEUR = 'Blue'
 TUNNEL_STEP = 10
 TUNNEL_LARGEUR_MIN = 200
 TUNNEL_LARGEUR_MAX = 300
-TUNNEL_ROUGH = 0.1
+TUNNEL_ROUGH = 0.2
+
+# Zone visible de la surface à l'écran (la surface est plus grande que l'écran)
+SCREEN_VISIBLE_TOP = (SURFACE_HEIGHT // 2) - (SCREEN_HEIGHT // 2)  # = 600
+SCREEN_VISIBLE_BOTTOM = (SURFACE_HEIGHT // 2) + (SCREEN_HEIGHT // 2)  # = 1200
+
+# Zone centrale du tunnel - doit rester dans la zone visible de l'écran
+TUNNEL_ZONE_MARGIN = 100  # Marge par rapport aux bords de l'écran
+TUNNEL_CENTER_MIN = SCREEN_VISIBLE_TOP + TUNNEL_ZONE_MARGIN  # Le haut du tunnel ne dépasse pas le haut de l'écran
+TUNNEL_CENTER_MAX = SCREEN_VISIBLE_BOTTOM - TUNNEL_LARGEUR_MAX - TUNNEL_ZONE_MARGIN  # Le bas du tunnel reste visible
 
 tileA = CreateNewTile(SURFACE_WIDTH, SURFACE_HEIGHT, (0,SCREEN_HEIGHT//2), '../../Image/surface.png')
 tileB = CreateNewTile(SURFACE_WIDTH, SURFACE_HEIGHT, (SURFACE_WIDTH,SCREEN_HEIGHT//2), '../../Image/surface.png')
@@ -143,6 +191,7 @@ pygame.time.set_timer(bonus_event,6000)
 
 running = True
 clock = pygame.time.Clock()
+ship_centered = False
 while running:
     clock.tick(FPS)
 
@@ -195,14 +244,31 @@ while running:
     if keys[pygame.K_DOWN] and rectangle_ship.bottom < SCREEN_HEIGHT:
         rectangle_ship.y += SHIP_SURFACE_SPEED
 
+    tunnel_bounds = None
+    for tile in tileList:
+        if tunnel_bounds is None:
+            tunnel_bounds = GetTunnelBoundsAtX(tile, rectangle_ship.centerx, SURFACE_WIDTH, TUNNEL_STEP)
+    if tunnel_bounds:
+        top_y, bottom_y = tunnel_bounds
+        if not ship_centered:
+            rectangle_ship.centery = int((top_y + bottom_y) / 2)
+            ship_centered = True
+        if rectangle_ship.top < top_y:
+            rectangle_ship.top = int(top_y)
+        if rectangle_ship.bottom > bottom_y:
+            rectangle_ship.bottom = int(bottom_y)
+
     for tile in tileList:
 
         tile['RECT'].x -= SURFACE_SPEED
 
         if tile['RECT'].left <= -SURFACE_WIDTH or not tile['INIT']:
-            tile['SURFACE'].fill((0, 0, 0))  #transparent ancienne tunnel
+            # Recharger l'image de fond au lieu de remplir avec du noir
+            background_img = pygame.image.load('../../Image/surface.png').convert()
+            background_img = pygame.transform.scale(background_img, (SURFACE_WIDTH, SURFACE_HEIGHT))
+            tile['SURFACE'].blit(background_img, (0, 0))
 
-            topPointList = CreateTopPath(topPathStart, TUNNEL_STEP, tilePadding, SURFACE_HEIGHT, SURFACE_WIDTH, TUNNEL_ROUGH)
+            topPointList = CreateTopPath(topPathStart, TUNNEL_STEP, tilePadding, SURFACE_HEIGHT, SURFACE_WIDTH, TUNNEL_ROUGH, TUNNEL_CENTER_MIN, TUNNEL_CENTER_MAX)
             tile['TUNNEL_TOP_LIST']=topPointList
             print(topPointList)
             topPathStart = (0, topPointList[len(topPointList)-1][1])
@@ -279,14 +345,14 @@ while running:
 
 
 
+    tunnel_bounds = None
     for tile in tileList:
-        for i in range(len(tile['TUNNEL_TOP_LIST'])-2):
-            if rectangle_ship.clipline(tile['TUNNEL_TOP_LIST'][i],tile['TUNNEL_TOP_LIST'][i+1]):
-                Current_score -= 50
-
-        for i in range(len(tile['TUNNEL_BOTTOM_LIST'])-2):
-            if rectangle_ship.clipline(tile['TUNNEL_BOTTOM_LIST'][i],tile['TUNNEL_BOTTOM_LIST'][i+1]):
-                Current_score -= 50
+        if tunnel_bounds is None:
+            tunnel_bounds = GetTunnelBoundsAtX(tile, rectangle_ship.centerx, SURFACE_WIDTH, TUNNEL_STEP)
+    if tunnel_bounds:
+        top_y, bottom_y = tunnel_bounds
+        if rectangle_ship.top <= top_y or rectangle_ship.bottom >= bottom_y:
+            Current_score -= 10
 
     screen.blit(ship_img,rectangle_ship)
 
